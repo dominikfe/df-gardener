@@ -1,0 +1,4 @@
+hvpa:
+  enabled: false
+  labels:
+    gardener.cloud/role: hvpa

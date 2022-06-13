@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "name" . }}
+  namespace: {{ .Release.Namespace }}
+{{-  if .Values.ignoreResources }}
+  annotations:
+    resources.gardener.cloud/ignore: "true"
+{{- end }}
+  labels:
+{{ include "labels" . | indent 4 }}
+spec:
+  revisionHistoryLimit: 5
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+{{ include "labels" . | indent 6 }}
+  strategy:
+    rollingUpdate:
+      maxUnavailable: {{ .Values.maxUnavailable }}
+      maxSurge: {{ .Values.maxSurge }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.imageVectorOverwrite }}
+        checksum/configmap-imagevector-overwrite: {{ include (print $.Template.BasePath "/configmap-imagevector-overwrite.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if and .Values.metrics.enableScraping }}
+        prometheus.io/scrape: "true"
+        # default metrics endpoint in controller-runtime
+        prometheus.io/port: "8080"
+        {{- end }}
+      labels:
+{{ include "labels" . | indent 8 }}
+    spec:
+      priorityClassName: {{ include "name" . }}
+      serviceAccountName: {{ include "name" . }}
+      containers:
+      - name: {{ include "name" . }}
+        image: {{ include "image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+        - /gardener-extension-provider-local
+        - --leader-election-resource-lock={{ .Values.leaderElection.resourceLock }}
+        - --controlplane-max-concurrent-reconciles={{ .Values.controllers.controlplane.concurrentSyncs }}
+        - --dnsprovider-max-concurrent-reconciles={{ .Values.controllers.dnsprovider.concurrentSyncs }}
+        - --dnsrecord-max-concurrent-reconciles={{ .Values.controllers.dnsrecord.concurrentSyncs }}
+        - --healthcheck-max-concurrent-reconciles={{ .Values.controllers.healthcheck.concurrentSyncs }}
+        - --infrastructure-max-concurrent-reconciles={{ .Values.controllers.infrastructure.concurrentSyncs }}
+        - --ignore-operation-annotation={{ .Values.controllers.ignoreOperationAnnotation }}
+        - --worker-max-concurrent-reconciles={{ .Values.controllers.worker.concurrentSyncs }}
+        - --operatingsystemconfig-max-concurrent-reconciles={{ .Values.controllers.operatingsystemconfig.concurrentSyncs }}
+        - --ingress-max-concurrent-reconciles={{ .Values.controllers.ingress.concurrentSyncs }}
+        - --service-max-concurrent-reconciles={{ .Values.controllers.service.concurrentSyncs }}
+        - --service-host-ip={{ .Values.controllers.service.hostIP }}
+        - --service-apiserver-sni-enabled={{ .Values.controllers.service.apiServerSNIEnabled }}
+        - --backupbucket-local-dir={{ .Values.controllers.backupbucket.localDir }}
+        - --backupbucket-container-mount-path={{ .Values.controllers.backupbucket.containerMountPath }}
+        - --webhook-config-namespace={{ .Release.Namespace }}
+        - --webhook-config-service-port={{ .Values.webhookConfig.servicePort }}
+        - --webhook-config-server-port={{ .Values.webhookConfig.serverPort }}
+        - --disable-controllers={{ .Values.disableControllers | join "," }}
+        - --disable-webhooks={{ .Values.disableWebhooks | join "," }}
+        {{- if .Values.healthPort }}
+        - --health-bind-address=:{{ .Values.healthPort }}
+        {{- end }}
+        {{- if .Values.gardener.version }}
+        - --gardener-version={{ .Values.gardener.version }}
+        {{- end }}
+        env:
+        - name: LEADER_ELECTION_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        {{- if .Values.imageVectorOverwrite }}
+        - name: IMAGEVECTOR_OVERWRITE
+          value: /charts_overwrite/images_overwrite.yaml
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.healthPort }}
+            scheme: HTTP
+          initialDelaySeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: {{ .Values.healthPort }}
+            scheme: HTTP
+          initialDelaySeconds: 5
+        ports:
+        - name: webhook-server
+          containerPort: {{ .Values.webhookConfig.serverPort }}
+          protocol: TCP
+{{- if .Values.resources }}
+        resources:
+{{ toYaml .Values.resources | nindent 10 }}
+{{- end }}
+        volumeMounts:
+        {{- if .Values.imageVectorOverwrite }}
+        - name: imagevector-overwrite
+          mountPath: /charts_overwrite/
+          readOnly: true
+        {{- end }}
+        - name: backup-path
+          mountPath: {{ .Values.controllers.backupbucket.localDir }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: {{ include "labels.app.key" . }}
+                operator: In
+                values:
+                - {{ include "labels.app.value" . }}
+            topologyKey: "kubernetes.io/hostname"
+      volumes:
+      {{- if .Values.imageVectorOverwrite }}
+      - name: imagevector-overwrite
+        configMap:
+          name: {{ include "name" . }}-imagevector-overwrite
+          defaultMode: 420
+      {{- end }}
+      - name: backup-path
+        hostPath:
+          path: {{ .Values.controllers.backupbucket.containerMountPath }}
+          type: Directory
